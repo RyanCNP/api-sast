@@ -1,0 +1,86 @@
+name: CI-CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  REGISTRY: docker.io
+  IMAGE_NAME: ${{ secrets.DOCKERHUB_REPO }} # ex: username/api-sast
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@master
+        with:
+          args: >
+            -Dsonar.login=${{ secrets.SONAR_TOKEN }}
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Calculate version
+        id: version
+        run: |
+          LAST_TAG=$(git tag --list 'v*' --sort=-v:refname | head -n1 || echo "v0.0.0")
+          CURRENT_VERSION="${LAST_TAG#v}"
+          NEW_VERSION=$(node -e "const semver=require('semver'); console.log(semver.inc(process.env.CURRENT_VERSION || '${CURRENT_VERSION}', 'patch'))" )
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+        env:
+          CURRENT_VERSION: ${{ steps.version.outputs.CURRENT_VERSION }}
+
+      - name: Build Docker image
+        run: |
+          docker build -t $REGISTRY/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.new_version }} .
+        env:
+          REGISTRY: docker.io
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push image
+        run: |
+          docker push $REGISTRY/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.new_version }}
+          docker tag $REGISTRY/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.new_version }} $REGISTRY/${{ env.IMAGE_NAME }}:latest
+          docker push $REGISTRY/${{ env.IMAGE_NAME }}:latest
+
+      - name: Create Git tag
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git tag v${{ steps.version.outputs.new_version }}
+          git push origin --tags
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Deploy to Render (trigger via API)
+        run: |
+          curl -X POST "https://api.render.com/deploy/srv-${{ secrets.RENDER_SERVICE_ID }}/deploys" \
+            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"clearCache\": \"clear\"}"
