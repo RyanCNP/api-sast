@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const denunciaRoutes = require('./routes/denuncia.routes');
-const setupSwagger = require('./swagger/swagger');
+const setupSwagger = require('./swwager/swwager');
 
 const app = express();
 app.use(express.json());
